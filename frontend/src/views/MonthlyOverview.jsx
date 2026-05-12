@@ -84,10 +84,47 @@ export default function MonthlyOverview({ ctx }) {
     if (active.id.startsWith("txn:")) {
       const txnId = Number(active.id.split(":")[1]);
       const fromCat = Number(active.data.current?.fromCat);
-      const toCat = over.id.startsWith("cat:") ? Number(over.id.split(":")[1]) : null;
-      if (toCat && toCat !== fromCat) {
-        await api.patchTransaction(txnId, { category_id: toCat });
-        push("Recategorised", "success");
+      // Parse category ID - handle "cat:null" case for Uncategorised
+      let toCat = null;
+      if (over.id.startsWith("cat:")) {
+        const catStr = over.id.split(":")[1];
+        toCat = catStr === "null" ? null : Number(catStr);
+      }
+      if (toCat !== fromCat) {
+        console.log("handleDragEnd: calling patchTransaction", txnId, toCat);
+        const response = await api.patchTransaction(txnId, { category_id: toCat });
+        console.log("handleDragEnd: response=", response);
+
+        // Show appropriate toast based on whether a rule was auto-learned
+        if (response?.rule_auto_learned && response?.auto_learned_rule) {
+          console.log("handleDragEnd: rule auto-learned!");
+          const rule = response.auto_learned_rule;
+          const category = ctx.categories.find(c => c.id === rule.category_id);
+          const categoryName = category?.name || "Unknown";
+          push(`Learned: "${rule.pattern}" → ${categoryName}`, "success");
+
+          // Re-categorize ALL uncategorized transactions matching the rule pattern
+          if (rule.pattern) {
+            console.log("handleDragEnd: calling recategoriseSimilar with pattern=", rule.pattern);
+            try {
+              const result = await api.recategoriseSimilar(rule.pattern, toCat);
+              console.log("handleDragEnd: recategoriseSimilar result=", result);
+              if (result?.updated > 0) {
+                if (result.updated === 1) {
+                  push(`Re-categorized 1 similar transaction`, "info");
+                } else {
+                  push(`Re-categorized ${result.updated} similar transactions`, "info");
+                }
+              }
+            } catch (err) {
+              console.error("Failed to recategorize similar transactions:", err);
+            }
+          }
+        } else {
+          console.log("handleDragEnd: no rule learned");
+          push("Recategorised", "success");
+        }
+
         await load();
       }
     }
@@ -389,13 +426,27 @@ function TxnRow({ txn, fromCat, categories, groups, onRefresh }) {
   const [groupId, setGroupId] = useState(txn.reimbursement_group_id || "");
 
   const save = async () => {
-    await api.patchTransaction(txn.id, {
+    const response = await api.patchTransaction(txn.id, {
       note: note || null,
       is_fixed_cost: isFixed,
       fixed_cost_label: fixedLabel || null,
       category_id: catId ? Number(catId) : null,
       reimbursement_group_id: groupId ? Number(groupId) : null,
     });
+
+    // Auto-recategorize similar transactions if a rule was learned
+    if (response?.rule_auto_learned && response?.auto_learned_rule) {
+      const rule = response.auto_learned_rule;
+      try {
+        const result = await api.recategoriseSimilar(rule.pattern, Number(catId));
+        if (result?.updated > 0) {
+          console.log("Auto-recategorized", result.updated, "similar transactions");
+        }
+      } catch (err) {
+        console.error("Failed to recategorize similar transactions:", err);
+      }
+    }
+
     setEditing(false);
     onRefresh();
   };
@@ -409,7 +460,7 @@ function TxnRow({ txn, fromCat, categories, groups, onRefresh }) {
       <button
         {...attributes}
         {...listeners}
-        className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500 px-1"
+        className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 px-1"
         title="Drag to recategorise"
       >
         ⋮⋮

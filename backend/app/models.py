@@ -33,6 +33,10 @@ class CategoryRule(SQLModel, table=True):
     field: str = "counterparty"  # counterparty | description
     category_id: int = Field(foreign_key="category.id")
     priority: int = 100
+    min_amount: Optional[float] = None          # Match only if |amount| >= min_amount
+    max_amount: Optional[float] = None          # Match only if |amount| <= max_amount
+    day_of_month_min: Optional[int] = None      # Match only if day of month >= this (1-31)
+    day_of_month_max: Optional[int] = None      # Match only if day of month <= this (1-31)
 
 
 class ReimbursementGroup(SQLModel, table=True):

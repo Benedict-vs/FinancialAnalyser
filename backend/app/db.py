@@ -22,6 +22,10 @@ SEED_CATEGORIES = [
     ("Rent & Utilities", "#475569"),
     ("Income", "#10b981"),
     ("Transfers / Splitwise", "#6366f1"),
+    ("Partying / Going Out", "#ec4899"),
+    ("Insurance", "#64748b"),
+    ("Cash", "#f43f5e"),
+    ("Sport", "#06b6d4"),
     ("Uncategorised", "#94a3b8"),
 ]
 

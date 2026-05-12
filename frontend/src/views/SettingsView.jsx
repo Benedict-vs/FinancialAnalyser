@@ -223,38 +223,70 @@ function RulesTab({ ctx }) {
   const [pattern, setPattern] = useState("");
   const [field, setField] = useState("counterparty");
   const [catId, setCatId] = useState("");
+  const [minAmount, setMinAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
+  const [dayMin, setDayMin] = useState("");
+  const [dayMax, setDayMax] = useState("");
   const { push } = useToast();
   const load = useCallback(async () => setRules(await api.rules()), []);
   useEffect(() => { load(); }, [load]);
 
   const catName = (id) => ctx.categories.find((c) => c.id === id)?.name || "—";
 
+  const formatCondition = (r) => {
+    const parts = [];
+    if (r.min_amount !== null && r.max_amount !== null) {
+      parts.push(`€${r.min_amount}-${r.max_amount}`);
+    } else if (r.min_amount !== null) {
+      parts.push(`≥€${r.min_amount}`);
+    } else if (r.max_amount !== null) {
+      parts.push(`≤€${r.max_amount}`);
+    }
+    if (r.day_of_month_min !== null && r.day_of_month_max !== null) {
+      parts.push(`days ${r.day_of_month_min}-${r.day_of_month_max}`);
+    } else if (r.day_of_month_min !== null) {
+      parts.push(`from day ${r.day_of_month_min}`);
+    } else if (r.day_of_month_max !== null) {
+      parts.push(`until day ${r.day_of_month_max}`);
+    }
+    return parts.length > 0 ? parts.join(", ") : null;
+  };
+
   return (
-    <div className="max-w-3xl">
+    <div className="max-w-4xl">
       <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 mb-4">
-        {rules.map((r) => (
-          <div key={r.id} className="px-4 py-2 flex items-center gap-3 text-sm">
-            <code className="bg-slate-100 px-2 py-0.5 rounded text-xs">{r.pattern}</code>
-            <span className="text-slate-400">in</span>
-            <span className="text-slate-600">{r.field}</span>
-            <span className="text-slate-400">→</span>
-            <span className="font-medium">{catName(r.category_id)}</span>
-            <button
-              onClick={async () => {
-                await api.deleteRule(r.id);
-                push("Removed", "success");
-                load();
-              }}
-              className="ml-auto text-slate-400 hover:text-rose-600 text-xs"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
+        {rules.map((r) => {
+          const condition = formatCondition(r);
+          return (
+            <div key={r.id} className="px-4 py-3 flex items-center gap-3 text-sm">
+              <code className="bg-slate-100 px-2 py-0.5 rounded text-xs">{r.pattern}</code>
+              <span className="text-slate-400">in</span>
+              <span className="text-slate-600">{r.field}</span>
+              <span className="text-slate-400">→</span>
+              <span className="font-medium">{catName(r.category_id)}</span>
+              {condition && (
+                <>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-400 text-xs">{condition}</span>
+                </>
+              )}
+              <button
+                onClick={async () => {
+                  await api.deleteRule(r.id);
+                  push("Removed", "success");
+                  load();
+                }}
+                className="ml-auto text-slate-400 hover:text-rose-600 text-xs"
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="font-medium mb-3">Add rule</div>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-4 gap-2 mb-3">
           <input
             value={pattern}
             onChange={(e) => setPattern(e.target.value)}
@@ -280,23 +312,78 @@ function RulesTab({ ctx }) {
             ))}
           </select>
         </div>
-        <button
-          onClick={async () => {
-            if (!pattern || !catId) return;
-            await api.createRule({
-              pattern,
-              field,
-              category_id: Number(catId),
-              priority: 100,
-            });
-            push("Rule added", "success");
-            load();
-            setPattern("");
-          }}
-          className="mt-2 text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md hover:bg-slate-700"
-        >
-          Add rule
-        </button>
+        <div className="grid grid-cols-4 gap-2">
+          <input
+            type="number"
+            value={minAmount}
+            onChange={(e) => setMinAmount(e.target.value)}
+            placeholder="Min amount (€)"
+            step="0.01"
+            className="text-sm border border-slate-200 rounded-md px-3 py-2"
+          />
+          <input
+            type="number"
+            value={maxAmount}
+            onChange={(e) => setMaxAmount(e.target.value)}
+            placeholder="Max amount (€)"
+            step="0.01"
+            className="text-sm border border-slate-200 rounded-md px-3 py-2"
+          />
+          <input
+            type="number"
+            value={dayMin}
+            onChange={(e) => setDayMin(e.target.value)}
+            placeholder="Day min (1-31)"
+            min="1"
+            max="31"
+            className="text-sm border border-slate-200 rounded-md px-3 py-2"
+          />
+          <input
+            type="number"
+            value={dayMax}
+            onChange={(e) => setDayMax(e.target.value)}
+            placeholder="Day max (1-31)"
+            min="1"
+            max="31"
+            className="text-sm border border-slate-200 rounded-md px-3 py-2"
+          />
+          <button
+            onClick={async () => {
+              if (!pattern || !catId) return;
+              await api.createRule({
+                pattern,
+                field,
+                category_id: Number(catId),
+                priority: 100,
+                min_amount: minAmount ? Number(minAmount) : null,
+                max_amount: maxAmount ? Number(maxAmount) : null,
+                day_of_month_min: dayMin ? Number(dayMin) : null,
+                day_of_month_max: dayMax ? Number(dayMax) : null,
+              });
+              push("Rule added", "success");
+
+              // Apply rule to existing uncategorized transactions
+              try {
+                const result = await api.recategoriseSimilar(pattern, Number(catId));
+                if (result?.updated > 0) {
+                  push(`Re-categorized ${result.updated} matching transaction${result.updated === 1 ? "" : "s"}`, "info");
+                }
+              } catch (err) {
+                console.error("Failed to apply rule to uncategorized transactions:", err);
+              }
+
+              load();
+              setPattern("");
+              setMinAmount("");
+              setMaxAmount("");
+              setDayMin("");
+              setDayMax("");
+            }}
+            className="col-span-4 text-sm bg-slate-900 text-white px-3 py-1.5 rounded-md hover:bg-slate-700"
+          >
+            Add
+          </button>
+        </div>
       </div>
     </div>
   );

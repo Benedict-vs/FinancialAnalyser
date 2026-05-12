@@ -126,6 +126,21 @@ class RuleCreate(BaseModel):
     field: str = "counterparty"
     category_id: int
     priority: int = 100
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    day_of_month_min: Optional[int] = None
+    day_of_month_max: Optional[int] = None
+
+
+class RuleUpdate(BaseModel):
+    pattern: Optional[str] = None
+    field: Optional[str] = None
+    category_id: Optional[int] = None
+    priority: Optional[int] = None
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    day_of_month_min: Optional[int] = None
+    day_of_month_max: Optional[int] = None
 
 
 @app.get("/category-rules")
@@ -150,6 +165,119 @@ def delete_rule(rule_id: int, session: Session = Depends(get_session)):
     session.delete(r)
     session.commit()
     return {"ok": True}
+
+
+@app.put("/category-rules/{rule_id}")
+def update_rule(rule_id: int, body: RuleUpdate, session: Session = Depends(get_session)):
+    r = session.get(CategoryRule, rule_id)
+    if not r:
+        raise HTTPException(404)
+    for k, v in body.dict(exclude_unset=True).items():
+        setattr(r, k, v)
+    session.add(r)
+    session.commit()
+    session.refresh(r)
+    return r
+
+
+class RecategoriseRequest(BaseModel):
+    transactions: list[dict]  # [{counterparty, description}, ...]
+
+
+@app.post("/categorise-batch")
+def categorise_batch(body: RecategoriseRequest, session: Session = Depends(get_session)):
+    """Re-categorize a batch of transactions based on current rules."""
+    results = []
+    for txn in body.transactions:
+        cat_id = categorise(
+            session,
+            txn.get("counterparty", ""),
+            txn.get("description", ""),
+            txn_date=txn.get("date"),
+            txn_amount=txn.get("amount"),
+        )
+        results.append({
+            "counterparty": txn.get("counterparty", ""),
+            "description": txn.get("description", ""),
+            "category_id": cat_id,
+        })
+    return {"results": results}
+
+
+class RecategoriseSimilarRequest(BaseModel):
+    pattern: str  # The rule pattern to match against
+    new_category_id: int
+
+
+@app.post("/recategorise-similar")
+def recategorise_similar(body: RecategoriseSimilarRequest, session: Session = Depends(get_session)):
+    """Re-categorize all uncategorized transactions matching a pattern and conditions."""
+    import re
+
+    uncategorised_cat = session.exec(select(Category).where(Category.name == "Uncategorised")).first()
+    if not uncategorised_cat:
+        raise HTTPException(400, "Uncategorised category not found")
+
+    # Find the rule that will be applied (to get its conditions)
+    rule = session.exec(
+        select(CategoryRule).where(CategoryRule.category_id == body.new_category_id)
+    ).first()
+
+    # Find all uncategorized transactions
+    all_uncategorized = session.exec(
+        select(Transaction).where(
+            Transaction.category_id == uncategorised_cat.id,
+        )
+    ).all()
+
+    # Filter by pattern match and conditions
+    matched = []
+    try:
+        # Try regex match first
+        pattern_re = re.compile(body.pattern, re.IGNORECASE)
+        for txn in all_uncategorized:
+            haystack = (txn.counterparty or "") + " " + (txn.description or "")
+            if pattern_re.search(haystack):
+                # Pattern matched, now check rule conditions if rule exists
+                if rule:
+                    if rule.min_amount is not None and abs(txn.amount) < rule.min_amount:
+                        continue
+                    if rule.max_amount is not None and abs(txn.amount) > rule.max_amount:
+                        continue
+                    if rule.day_of_month_min is not None and txn.date.day < rule.day_of_month_min:
+                        continue
+                    if rule.day_of_month_max is not None and txn.date.day > rule.day_of_month_max:
+                        continue
+                matched.append(txn)
+    except re.error:
+        # Fallback to substring match
+        pattern_lower = body.pattern.lower()
+        for txn in all_uncategorized:
+            haystack = ((txn.counterparty or "") + " " + (txn.description or "")).lower()
+            if pattern_lower in haystack:
+                # Pattern matched, now check rule conditions if rule exists
+                if rule:
+                    if rule.min_amount is not None and abs(txn.amount) < rule.min_amount:
+                        continue
+                    if rule.max_amount is not None and abs(txn.amount) > rule.max_amount:
+                        continue
+                    if rule.day_of_month_min is not None and txn.date.day < rule.day_of_month_min:
+                        continue
+                    if rule.day_of_month_max is not None and txn.date.day > rule.day_of_month_max:
+                        continue
+                matched.append(txn)
+
+    print(f"DEBUG recategorise_similar: pattern='{body.pattern}', uncategorised_id={uncategorised_cat.id}, found={len(matched)}")
+    for txn in matched:
+        print(f"  - Updating txn {txn.id}: {txn.counterparty}")
+
+    # Update them all
+    for txn in matched:
+        txn.category_id = body.new_category_id
+        session.add(txn)
+
+    session.commit()
+    return {"updated": len(matched)}
 
 
 # ---------- Import ----------
@@ -247,6 +375,8 @@ async def do_import(
             r.get("counterparty", ""),
             r.get("description", ""),
             r.get("sparkasse_kategorie"),
+            txn_date=r.get("date"),
+            txn_amount=r.get("amount"),
         )
         t = Transaction(
             workspace_id=workspace_id,
@@ -299,6 +429,48 @@ class BulkCategorise(BaseModel):
     category_id: int
 
 
+def auto_learn_rule(session: Session, transaction: Transaction, new_category_id: int) -> dict | None:
+    """
+    Create a rule based on a manual categorization override.
+    Returns dict with rule info or None if no rule was created.
+    """
+    # Only create rules for non-empty counterparties
+    if not transaction.counterparty or not transaction.counterparty.strip():
+        print(f"DEBUG auto_learn_rule: skipping empty counterparty")
+        return None
+
+    # Check if a rule already exists for this exact counterparty+category combo
+    existing = session.exec(
+        select(CategoryRule).where(
+            CategoryRule.pattern == transaction.counterparty,
+            CategoryRule.field == "counterparty",
+            CategoryRule.category_id == new_category_id
+        )
+    ).first()
+    if existing:
+        print(f"DEBUG auto_learn_rule: rule already exists for '{transaction.counterparty}' -> {new_category_id}")
+        return None  # Rule already exists
+
+    # Create new rule with priority=150 (beats default 100)
+    rule = CategoryRule(
+        pattern=transaction.counterparty,
+        field="counterparty",
+        category_id=new_category_id,
+        priority=150
+    )
+    session.add(rule)
+    session.commit()
+    session.refresh(rule)
+    print(f"DEBUG auto_learn_rule: created rule {rule.id} for '{transaction.counterparty}' -> {new_category_id}")
+    return {
+        "id": rule.id,
+        "pattern": rule.pattern,
+        "field": rule.field,
+        "category_id": rule.category_id,
+        "priority": rule.priority,
+    }
+
+
 @app.get("/transactions")
 def list_transactions(
     workspace_id: int,
@@ -329,12 +501,40 @@ def update_transaction(tid: int, body: TransactionUpdate, session: Session = Dep
     t = session.get(Transaction, tid)
     if not t:
         raise HTTPException(404)
+
+    # Check if category is being updated and if it's an override
+    rule_auto_learned = None
+    if "category_id" in body.dict(exclude_unset=True):
+        new_category_id = body.category_id
+        # Determine what the current rules would categorize this transaction as
+        current_auto_category = categorise(
+            session,
+            t.counterparty or "",
+            t.description or "",
+            txn_date=t.date,
+            txn_amount=t.amount,
+        )
+        print(f"DEBUG update_transaction: tid={tid}, current_auto={current_auto_category}, new={new_category_id}")
+        # If user is overriding the auto-categorization, learn the pattern
+        if new_category_id and new_category_id != current_auto_category:
+            rule_auto_learned = auto_learn_rule(session, t, new_category_id)
+            print(f"DEBUG update_transaction: rule_auto_learned={rule_auto_learned is not None}")
+
+    # Update transaction fields
     for k, v in body.dict(exclude_unset=True).items():
         setattr(t, k, v)
     session.add(t)
     session.commit()
     session.refresh(t)
-    return t
+
+    # Return response with auto-learning info
+    response = {
+        "transaction": t,
+        "rule_auto_learned": rule_auto_learned is not None,
+        "auto_learned_rule": rule_auto_learned,
+    }
+    print(f"DEBUG update_transaction: response={response}")
+    return response
 
 
 @app.post("/transactions/bulk-categorise")

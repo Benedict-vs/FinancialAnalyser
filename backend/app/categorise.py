@@ -1,9 +1,10 @@
 import re
+from datetime import date as _date
 from sqlmodel import Session, select
 from .models import Category, CategoryRule
 
 
-def categorise(session: Session, counterparty: str, description: str, sparkasse_kategorie: str | None = None) -> int | None:
+def categorise(session: Session, counterparty: str, description: str, sparkasse_kategorie: str | None = None, txn_date: _date | None = None, txn_amount: float | None = None) -> int | None:
     rules = session.exec(select(CategoryRule).order_by(CategoryRule.priority.desc())).all()
     text_by_field = {
         "counterparty": counterparty or "",
@@ -13,9 +14,37 @@ def categorise(session: Session, counterparty: str, description: str, sparkasse_
         haystack = text_by_field.get(rule.field, "") + " " + (description or "")
         try:
             if re.search(rule.pattern, haystack, re.IGNORECASE):
+                # Pattern matched, now check conditions
+                if rule.min_amount is not None and txn_amount is not None:
+                    if abs(txn_amount) < rule.min_amount:
+                        continue
+                if rule.max_amount is not None and txn_amount is not None:
+                    if abs(txn_amount) > rule.max_amount:
+                        continue
+                if rule.day_of_month_min is not None and txn_date is not None:
+                    if txn_date.day < rule.day_of_month_min:
+                        continue
+                if rule.day_of_month_max is not None and txn_date is not None:
+                    if txn_date.day > rule.day_of_month_max:
+                        continue
+                # All conditions passed
                 return rule.category_id
         except re.error:
             if rule.pattern.lower() in haystack.lower():
+                # Pattern matched (substring), now check conditions
+                if rule.min_amount is not None and txn_amount is not None:
+                    if abs(txn_amount) < rule.min_amount:
+                        continue
+                if rule.max_amount is not None and txn_amount is not None:
+                    if abs(txn_amount) > rule.max_amount:
+                        continue
+                if rule.day_of_month_min is not None and txn_date is not None:
+                    if txn_date.day < rule.day_of_month_min:
+                        continue
+                if rule.day_of_month_max is not None and txn_date is not None:
+                    if txn_date.day > rule.day_of_month_max:
+                        continue
+                # All conditions passed
                 return rule.category_id
 
     combined = f"{counterparty} {description}".lower()

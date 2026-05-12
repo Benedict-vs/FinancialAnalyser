@@ -45,7 +45,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     }),
+  updateRule: (id, data) =>
+    req(`/category-rules/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
   deleteRule: (id) => req(`/category-rules/${id}`, { method: "DELETE" }),
+  recategoriseSimilar: (pattern, new_category_id) =>
+    req("/recategorise-similar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern, new_category_id }),
+    }),
   transactions: (params) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== undefined && v !== null)
