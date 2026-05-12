@@ -4,13 +4,15 @@ from sqlmodel import Session, select
 from .models import Transaction, FixedCostPattern
 
 
-def _levenshtein(a: str, b: str) -> int:
+def _levenshtein(a: str, b: str, threshold: int = 3) -> int:
     if a == b:
         return 0
     if not a:
         return len(b)
     if not b:
         return len(a)
+    if abs(len(a) - len(b)) >= threshold:
+        return threshold
     if len(a) > len(b):
         a, b = b, a
     prev = list(range(len(a) + 1))
@@ -21,6 +23,8 @@ def _levenshtein(a: str, b: str) -> int:
             dele = prev[j] + 1
             sub = prev[j - 1] + (0 if ca == cb else 1)
             curr.append(min(ins, dele, sub))
+        if min(curr) >= threshold:
+            return threshold
         prev = curr
     return prev[-1]
 
@@ -37,9 +41,16 @@ def detect_candidates(session: Session, workspace_id: int) -> list[dict]:
 
     groups: dict[str, list[Transaction]] = defaultdict(list)
     keys: list[str] = []
+    alias: dict[str, str] = {}
     for t in txns:
         k = _key(t.counterparty)
         if not k:
+            continue
+        if k in groups:
+            groups[k].append(t)
+            continue
+        if k in alias:
+            groups[alias[k]].append(t)
             continue
         matched = None
         for existing in keys:
@@ -47,6 +58,7 @@ def detect_candidates(session: Session, workspace_id: int) -> list[dict]:
                 matched = existing
                 break
         if matched:
+            alias[k] = matched
             groups[matched].append(t)
         else:
             keys.append(k)

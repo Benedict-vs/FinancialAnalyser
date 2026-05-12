@@ -15,17 +15,27 @@ export default function ReimbursementLinker({ ctx }) {
   const { push } = useToast();
 
   const load = useCallback(async () => {
-    const [g, t, s] = await Promise.all([
+    const [g, s] = await Promise.all([
       api.groups(ctx.workspace.id),
-      api.transactions({ workspace_id: ctx.workspace.id }),
       api.suggestMensa(ctx.workspace.id),
     ]);
     setGroups(g);
-    setTransactions(t);
     setSuggestions(s);
   }, [ctx.workspace.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!search.trim()) {
+      setTransactions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const t = await api.transactions({ workspace_id: ctx.workspace.id, search: search.trim() });
+      setTransactions(t);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search, ctx.workspace.id]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -108,9 +118,14 @@ export default function ReimbursementLinker({ ctx }) {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search transactions…"
+          placeholder="Type to search transactions…"
           className="w-full bg-white border border-slate-200 rounded-md px-3 py-2 text-sm"
         />
+        {!search.trim() && transactions.length === 0 && (
+          <div className="text-xs text-slate-400 text-center py-2">
+            Start typing to search for transactions to link.
+          </div>
+        )}
 
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">

@@ -479,6 +479,8 @@ def list_transactions(
     category_id: Optional[int] = None,
     source_id: Optional[int] = None,
     needs_enrichment: Optional[bool] = None,
+    search: Optional[str] = None,
+    limit: int = 500,
     session: Session = Depends(get_session),
 ):
     q = select(Transaction).where(Transaction.workspace_id == workspace_id)
@@ -492,7 +494,12 @@ def list_transactions(
         q = q.where(Transaction.source_id == source_id)
     if needs_enrichment:
         q = q.where(Transaction.needs_paypal_enrichment == True)
-    q = q.order_by(Transaction.date.desc(), Transaction.id.desc())
+    if search:
+        q = q.where(
+            Transaction.counterparty.icontains(search)
+            | Transaction.description.icontains(search)
+        )
+    q = q.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(limit)
     return session.exec(q).all()
 
 
@@ -832,7 +839,6 @@ def analytics_trends(
     session: Session = Depends(get_session),
 ):
     today = date.today()
-    series: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     cats = session.exec(select(Category)).all()
     cat_lookup = {c.id: c for c in cats}
 
@@ -846,19 +852,23 @@ def analytics_trends(
             y -= 1
     months_list.reverse()
 
-    for (yr, mo) in months_list:
-        first = date(yr, mo, 1)
-        last = date(yr, mo, calendar.monthrange(yr, mo)[1])
-        txns = session.exec(
-            select(Transaction).where(
-                Transaction.workspace_id == workspace_id,
-                Transaction.date >= first,
-                Transaction.date <= last,
-            )
-        ).all()
-        key = f"{yr:04d}-{mo:02d}"
-        for t in txns:
-            series[t.category_id or 0][key] += t.amount
+    first_yr, first_mo = months_list[0]
+    last_yr, last_mo = months_list[-1]
+    range_start = date(first_yr, first_mo, 1)
+    range_end = date(last_yr, last_mo, calendar.monthrange(last_yr, last_mo)[1])
+
+    txns = session.exec(
+        select(Transaction).where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.date >= range_start,
+            Transaction.date <= range_end,
+        )
+    ).all()
+
+    series: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for t in txns:
+        key = f"{t.date.year:04d}-{t.date.month:02d}"
+        series[t.category_id or 0][key] += t.amount
 
     out = []
     for cid, points in series.items():
@@ -885,28 +895,29 @@ def analytics_estimates(workspace_id: int, session: Session = Depends(get_sessio
             y -= 1
         months_list.append((y, m))
 
-    sums: dict[int, list[float]] = defaultdict(list)
-    for (yr, mo) in months_list:
-        first = date(yr, mo, 1)
-        last = date(yr, mo, calendar.monthrange(yr, mo)[1])
-        txns = session.exec(
-            select(Transaction).where(
-                Transaction.workspace_id == workspace_id,
-                Transaction.date >= first,
-                Transaction.date <= last,
-            )
-        ).all()
-        bucket: dict[int, float] = defaultdict(float)
-        for t in txns:
-            bucket[t.category_id or 0] += t.amount
-        for cid, v in bucket.items():
-            sums[cid].append(v)
+    first_yr, first_mo = months_list[-1]
+    last_yr, last_mo = months_list[0]
+    range_start = date(first_yr, first_mo, 1)
+    range_end = date(last_yr, last_mo, calendar.monthrange(last_yr, last_mo)[1])
+
+    txns = session.exec(
+        select(Transaction).where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.date >= range_start,
+            Transaction.date <= range_end,
+        )
+    ).all()
+
+    monthly_buckets: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for t in txns:
+        key = f"{t.date.year}-{t.date.month}"
+        monthly_buckets[t.category_id or 0][key] += t.amount
 
     cats = session.exec(select(Category)).all()
     cat_lookup = {c.id: c for c in cats}
     out = []
-    for cid, vals in sums.items():
-        avg = sum(vals) / len(vals)
+    for cid, month_vals in monthly_buckets.items():
+        avg = sum(month_vals.values()) / len(months_list)
         c = cat_lookup.get(cid)
         out.append({
             "category_id": cid or None,
